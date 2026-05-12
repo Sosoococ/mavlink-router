@@ -51,6 +51,10 @@
 #define TX_BUF_MAX_SIZE (8U * 1024U)
 
 #define UART_BAUD_RETRY_SEC 5
+#define UART_INITIAL_HEARTBEAT_COUNT 5
+#define UART_INITIAL_HEARTBEAT_DELAY_USEC 200000
+#define UART_INITIAL_HEARTBEAT_SYS_ID 255
+#define UART_INITIAL_HEARTBEAT_COMP_ID MAV_COMP_ID_MISSIONPLANNER
 
 uint16_t Endpoint::sniffer_sysid = 0;
 
@@ -753,6 +757,10 @@ bool UartEndpoint::setup(UartEndpointConfig conf)
         }
     }
 
+    if (this->send_initial_heartbeats() < 0) {
+        return false;
+    }
+
     for (auto msg_id : conf.allow_msg_id_out) {
         this->filter_add_allowed_out_msg_id(msg_id);
     }
@@ -794,6 +802,53 @@ bool UartEndpoint::setup(UartEndpointConfig conf)
     this->_group_name = conf.group;
 
     return true;
+}
+
+int UartEndpoint::send_initial_heartbeats()
+{
+    mavlink_message_t msg{};
+    mavlink_heartbeat_t heartbeat{};
+    uint8_t data[MAVLINK_MAX_PACKET_LEN];
+
+    heartbeat.type = MAV_TYPE_GCS;
+    heartbeat.autopilot = MAV_AUTOPILOT_INVALID;
+    heartbeat.base_mode = 0;
+    heartbeat.custom_mode = 0;
+    heartbeat.system_status = 0;
+
+    mavlink_msg_heartbeat_encode(
+        UART_INITIAL_HEARTBEAT_SYS_ID, UART_INITIAL_HEARTBEAT_COMP_ID, &msg, &heartbeat);
+
+    const uint16_t len = mavlink_msg_to_send_buffer(data, &msg);
+
+    for (unsigned i = 0; i < UART_INITIAL_HEARTBEAT_COUNT; i++) {
+        const ssize_t r = ::write(fd, data, len);
+        if (r < 0) {
+            log_error("UART [%d]%s: Could not send initial heartbeat (%m)", fd, _name.c_str());
+            return -errno;
+        }
+
+        if (r != len) {
+            log_error("UART [%d]%s: Initial heartbeat write truncated (%zd/%u)",
+                      fd,
+                      _name.c_str(),
+                      r,
+                      len);
+            return -EIO;
+        }
+
+        log_debug("UART [%d]%s: Sent initial heartbeat %u/%u",
+                  fd,
+                  _name.c_str(),
+                  i + 1,
+                  UART_INITIAL_HEARTBEAT_COUNT);
+
+        if (i + 1 < UART_INITIAL_HEARTBEAT_COUNT) {
+            usleep(UART_INITIAL_HEARTBEAT_DELAY_USEC);
+        }
+    }
+
+    return 0;
 }
 
 int UartEndpoint::set_speed(speed_t baudrate)

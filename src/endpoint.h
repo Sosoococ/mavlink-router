@@ -320,6 +320,7 @@ private:
     std::vector<uint32_t> _baudrates;
 
     bool _change_baud_cb(void *data);
+    int send_initial_heartbeats();
 };
 
 class UdpEndpoint : public Endpoint {
